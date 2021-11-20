@@ -1,5 +1,8 @@
 package master;
 
+import org.apache.flink.api.java.tuple.Tuple6;
+import org.apache.flink.streaming.api.datastream.DataStream;
+import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 
 public class VehicleTelematics
@@ -31,7 +34,14 @@ public class VehicleTelematics
         * 8. Pos - (0 . . . 527999) identifies the horizontal position of the vehicle as the number of meters from the
             westernmost point on the highway (i.e., Pos = x)
          */
+        //********************************************************************************************************************************************
+        //1.SpeedRadar: detects cars that overcome the speed limit of 90 mph.
+        //Specify the data source as the csv file containing vehicle information
+        DataStream<String> text = env.readTextFile(inputFile);
 
+        SingleOutputStreamOperator<Tuple6<Integer, Integer, Integer, Integer, Integer, Integer>> speedRadarMapStream = text.flatMap(new SpeedRadar());
+        speedRadarMapStream.writeAsCsv(outputPath + "/speedfines.csv");
+        //**********************************************************************************************************************************************
         // execute program
         env.execute("SourceSink");
 
