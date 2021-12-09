@@ -1,9 +1,20 @@
 package master;
 
-import org.apache.flink.api.java.tuple.Tuple6;
+import org.apache.flink.api.common.functions.FilterFunction;
+import org.apache.flink.api.common.functions.MapFunction;
+import org.apache.flink.api.java.functions.KeySelector;
+import org.apache.flink.api.java.tuple.*;
+import org.apache.flink.streaming.api.TimeCharacteristic;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.functions.timestamps.AscendingTimestampExtractor;
+import org.apache.flink.streaming.api.functions.timestamps.BoundedOutOfOrdernessTimestampExtractor;
+import org.apache.flink.streaming.api.functions.windowing.WindowFunction;
+import org.apache.flink.streaming.api.windowing.assigners.SlidingEventTimeWindows;
+import org.apache.flink.streaming.api.windowing.time.Time;
+import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
+import org.apache.flink.util.Collector;
 
 public class VehicleTelematics
 {
@@ -21,6 +32,9 @@ public class VehicleTelematics
 
         // set up the streaming execution environment
         final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        // make parameters available in the web interface
+        env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
+
         /*
         * Input file format: Time, VID, Spd, XWay, Lane, Dir, Seg, Pos
         * 1. Time - a timestamp (integer) in seconds identifying the time at which the position event was emitted,
@@ -40,10 +54,33 @@ public class VehicleTelematics
         DataStream<String> text = env.readTextFile(inputFile);
 
         SingleOutputStreamOperator<Tuple6<Integer, Integer, Integer, Integer, Integer, Integer>> speedRadarMapStream = text.flatMap(new SpeedRadar());
-        speedRadarMapStream.writeAsCsv(outputPath + "/speedfines.csv");
+        speedRadarMapStream.writeAsCsv(outputPath + "/speedfines.csv").setParallelism(1);
+        //**********************************************************************************************************************************************
+
+        //3.AccidentReporter. detects stopped vehicles on any segment. A vehicle is stopped when it reports
+        //at least 4 consecutive events from the same position
+        //Specify the data source as the csv file containing vehicle information
+        env.setParallelism(1);
+        DataStream<String> text_3 = env.readTextFile(inputFile);
+        //filter since we are only interested in Time, VID, XWay, Seg, Dir, Pos
+        SingleOutputStreamOperator<Tuple7<Integer, Integer, Integer, Integer, Integer, Integer, Integer>> accidentReporterMapStream = text_3.flatMap(new AccidentReporter.SourceFilter());
+        //Create a sliding window that is event driven
+        SingleOutputStreamOperator<Tuple7<Integer, Integer, Integer, Integer, Integer, Integer, Integer>> window
+                = accidentReporterMapStream
+                .assignTimestampsAndWatermarks(new AccidentReporter.TimeStampAscending());
+        env.setParallelism(3);
+        SingleOutputStreamOperator<Tuple7<Integer, Integer, Integer, Integer, Integer, Integer, Integer>> window2 = window
+                .keyBy(value -> value.f1)
+                .window(SlidingEventTimeWindows.of(Time.seconds(120),Time.seconds(30)))
+                .apply(new AccidentReporter.AccidentCheck());
+
+        //export the data to excel
+        window2.writeAsCsv(outputPath+"/accidents.csv").setParallelism(1);
         //**********************************************************************************************************************************************
         // execute program
         env.execute("SourceSink");
+        //*************************************************************************************************************************
 
     }
+
 }
