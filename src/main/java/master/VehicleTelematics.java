@@ -1,24 +1,16 @@
 package master;
 
-import org.apache.flink.api.common.functions.FilterFunction;
 import org.apache.flink.api.common.functions.MapFunction;
-import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.api.java.tuple.*;
 import org.apache.flink.streaming.api.TimeCharacteristic;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.ProcessFunction;
 import org.apache.flink.streaming.api.functions.timestamps.AscendingTimestampExtractor;
-import org.apache.flink.streaming.api.functions.timestamps.BoundedOutOfOrdernessTimestampExtractor;
 import org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction;
-import org.apache.flink.streaming.api.functions.windowing.WindowFunction;
-import org.apache.flink.streaming.api.windowing.assigners.GlobalWindows;
+import org.apache.flink.streaming.api.windowing.assigners.EventTimeSessionWindows;
 import org.apache.flink.streaming.api.windowing.assigners.SlidingEventTimeWindows;
 import org.apache.flink.streaming.api.windowing.time.Time;
-import org.apache.flink.streaming.api.windowing.triggers.Trigger;
-import org.apache.flink.streaming.api.windowing.triggers.TriggerResult;
-import org.apache.flink.streaming.api.windowing.windows.GlobalWindow;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.util.Collector;
 
@@ -81,12 +73,95 @@ public class VehicleTelematics
         //export the data to excel
         window2.writeAsCsv(outputPath+"/accidents.csv").setParallelism(1);
         //**********************************************************************************************************************************************
+        //2.AverageSpeedControl: detects cars with an average speed higher than 60 mph between segments 52 and 56.
+        DataStream<String> carData = env.readTextFile(inputFile);
+        DataStream<CarEvent> events = carData
+                .map(new MapFunction<String, CarEvent>() {
+                    @Override
+                    public CarEvent map(String line) throws Exception {
+                        return CarEvent.fromString(line);
+                    }
+                })
+                .assignTimestampsAndWatermarks(
+                        new AscendingTimestampExtractor<CarEvent>() {
+                            @Override
+                            public long extractAscendingTimestamp(CarEvent element) {
+                                return element.timestamp*1000;
+                            }
+                        }
+                )
+                .filter(r -> r.segment >= 52 && r.segment <= 56);
 
+        DataStream<Tuple6<Integer, Integer, Integer, Integer, Integer, Integer>> avgEvents = events
+                .keyBy((CarEvent r) -> r.vehicleID)
+                .window(EventTimeSessionWindows.withGap(Time.seconds(30)))
+                .allowedLateness(Time.seconds(60))
+                .process(new AvgSpeedControl());
+
+        avgEvents.writeAsCsv(outputPath + "/avgspeedfines.csv").setParallelism(1);
+        //********************************************************************************************************************************************
 
         // execute program
         env.execute("SourceSink");
         //*************************************************************************************************************************
 
+    }
+    public static class AvgSpeedControl extends ProcessWindowFunction<CarEvent, Tuple6<Integer, Integer, Integer, Integer, Integer, Integer>, Integer, TimeWindow> {
+
+        @Override
+        public void process(Integer vehicleID, Context context, Iterable<CarEvent> input, Collector<Tuple6<Integer, Integer, Integer, Integer, Integer, Integer>> out) throws Exception {
+
+            boolean firstSeg = false, secondSeg = false, thirdSeg = false, fourthSeg = false, lastSeg = false;
+            int firstTime = 0, lastTime = 0, firstPos = 0, lastPos = 0, dir = 0, hw = 0;
+
+            for (CarEvent e : input) {
+
+                if (e.direction == 0) {
+                    if (firstPos == 0 && e.segment == 52) {
+                        firstSeg = true;
+                        firstTime = e.timestamp;
+                        firstPos = e.position;
+                    }
+                    if (e.segment == 53) secondSeg = true;
+                    if (e.segment == 54) thirdSeg = true;
+                    if (e.segment == 55) fourthSeg = true;
+                    if (e.segment == 56) {
+                        lastSeg = true;
+                        lastTime = e.timestamp;
+                        lastPos = e.position;
+                        dir = e.direction;
+                        hw = e.highway;
+                    }
+                }
+                else {
+                    if (lastPos == 0 && e.segment == 56) {
+                        firstSeg = true;
+                        firstTime = e.timestamp;
+                        lastPos = e.position; // So that the speed formula work
+                    }
+                    if (e.segment == 55) secondSeg = true;
+                    if (e.segment == 54) thirdSeg = true;
+                    if (e.segment == 53) fourthSeg = true;
+                    if (e.segment == 52) {
+                        lastSeg = true;
+                        lastTime = e.timestamp;
+                        firstPos = e.position;
+                        dir = e.direction;
+                        hw = e.highway;
+                    }
+                }
+            }
+
+            if (firstSeg && secondSeg && thirdSeg && fourthSeg && lastSeg) {
+
+                // Speed = Distance traveled / Time taken
+                double calc = (lastPos - firstPos) / (lastTime - firstTime);
+                // Miles per hour = meters per second * 2.236936
+                int avgSpeed = (int)(calc * 2.236936);
+
+                if (avgSpeed > 60) out.collect(Tuple6.of(firstTime, lastTime, vehicleID, hw, dir, avgSpeed));
+            }
+        };
     }
 
 
