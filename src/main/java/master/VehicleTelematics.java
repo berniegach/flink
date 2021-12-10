@@ -8,11 +8,17 @@ import org.apache.flink.streaming.api.TimeCharacteristic;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.functions.ProcessFunction;
 import org.apache.flink.streaming.api.functions.timestamps.AscendingTimestampExtractor;
 import org.apache.flink.streaming.api.functions.timestamps.BoundedOutOfOrdernessTimestampExtractor;
+import org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction;
 import org.apache.flink.streaming.api.functions.windowing.WindowFunction;
+import org.apache.flink.streaming.api.windowing.assigners.GlobalWindows;
 import org.apache.flink.streaming.api.windowing.assigners.SlidingEventTimeWindows;
 import org.apache.flink.streaming.api.windowing.time.Time;
+import org.apache.flink.streaming.api.windowing.triggers.Trigger;
+import org.apache.flink.streaming.api.windowing.triggers.TriggerResult;
+import org.apache.flink.streaming.api.windowing.windows.GlobalWindow;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.util.Collector;
 
@@ -56,7 +62,6 @@ public class VehicleTelematics
         SingleOutputStreamOperator<Tuple6<Integer, Integer, Integer, Integer, Integer, Integer>> speedRadarMapStream = text.flatMap(new SpeedRadar());
         speedRadarMapStream.writeAsCsv(outputPath + "/speedfines.csv").setParallelism(1);
         //**********************************************************************************************************************************************
-
         //3.AccidentReporter. detects stopped vehicles on any segment. A vehicle is stopped when it reports
         //at least 4 consecutive events from the same position
         //Specify the data source as the csv file containing vehicle information
@@ -73,14 +78,16 @@ public class VehicleTelematics
                 .keyBy(value -> value.f1)
                 .window(SlidingEventTimeWindows.of(Time.seconds(120),Time.seconds(30)))
                 .apply(new AccidentReporter.AccidentCheck());
-
         //export the data to excel
         window2.writeAsCsv(outputPath+"/accidents.csv").setParallelism(1);
         //**********************************************************************************************************************************************
+
+
         // execute program
         env.execute("SourceSink");
         //*************************************************************************************************************************
 
     }
+
 
 }
